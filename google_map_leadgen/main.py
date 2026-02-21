@@ -7,8 +7,8 @@ import json
 import logging
 import sys
 
-from src.scraper import scrape
-from src.config import SAVE_AS_CSV, CSV_FILENAME
+from .config import CSV_FILENAME, MAX_TABS, TARGET_LEADS
+from .scraper import scrape
 
 logging.basicConfig(
     level=logging.INFO,
@@ -31,7 +31,7 @@ def save_to_csv(results: list[dict], filename: str = CSV_FILENAME):
 
 async def main():
     parser = argparse.ArgumentParser(
-        description="Google Maps Lead Generator - Extract business leads from Google Maps"
+        description="Google Maps Lead Generator - Extract business leads"
     )
     parser.add_argument(
         "query",
@@ -53,8 +53,14 @@ async def main():
     parser.add_argument(
         "--leads",
         type=int,
-        default=25,
-        help="Number of leads to collect",
+        default=TARGET_LEADS,
+        help=f"Number of leads to collect (default: {TARGET_LEADS})",
+    )
+    parser.add_argument(
+        "--tabs",
+        type=int,
+        default=MAX_TABS,
+        help=f"Number of concurrent browser tabs (default: {MAX_TABS})",
     )
 
     args = parser.parse_args()
@@ -64,7 +70,7 @@ async def main():
         sys.exit(0)
 
     logger.info(f"Starting lead generation for: {args.query}")
-    results = await scrape(args.query)
+    results = await scrape(args.query, target=args.leads, max_tabs=args.tabs)
 
     if results:
         logger.info(f"Total leads extracted: {len(results)}")

@@ -22,9 +22,10 @@ Performance Optimizations:
 
 import asyncio
 import logging
+
 from camoufox.async_api import AsyncCamoufox
 
-from .config import TARGET_LEADS, MAX_TABS, HEADLESS, DEBUG
+from .config import HEADLESS, MAX_TABS, TARGET_LEADS
 
 logger = logging.getLogger(__name__)
 
@@ -109,9 +110,11 @@ async def collect_lead_links(
         if len(lead_links) >= target:
             break
 
-        await page.evaluate(
-            "() => { const feed = document.querySelector('div[role=\"feed\"]'); if (feed) feed.scrollTop = feed.scrollHeight; }"
+        scroll_js = (
+            "() => { const feed = document.querySelector('div[role=\"feed\"]'); "
+            "if (feed) feed.scrollTop = feed.scrollHeight; }"
         )
+        await page.evaluate(scroll_js)
         await asyncio.sleep(0.8)
 
     await page.close()
@@ -170,18 +173,21 @@ async def _page_worker(
         url_queue.task_done()
 
 
-async def process_all_leads(browser, urls: list[str]) -> list[dict]:
+async def process_all_leads(
+    browser, urls: list[str], max_tabs: int = MAX_TABS
+) -> list[dict]:
     """
     Process multiple URLs concurrently using a pool of persistent pages.
 
     Args:
         browser: Camoufox browser instance
         urls: List of place URLs to scrape
+        max_tabs: Maximum number of concurrent tabs
 
     Returns:
         List of dictionaries containing business data
     """
-    num_tabs = min(MAX_TABS, len(urls))
+    num_tabs = min(max_tabs, len(urls))
 
     url_queue: asyncio.Queue[str] = asyncio.Queue()
     for url in urls:
@@ -212,12 +218,16 @@ async def process_all_leads(browser, urls: list[str]) -> list[dict]:
     return results
 
 
-async def scrape(query: str) -> list[dict]:
+async def scrape(
+    query: str, target: int = TARGET_LEADS, max_tabs: int = MAX_TABS
+) -> list[dict]:
     """
     Main entry point - scrape business leads from Google Maps.
 
     Args:
         query: Search query (e.g., "Restaurants in San Francisco")
+        target: Number of leads to collect
+        max_tabs: Number of concurrent browser tabs
 
     Returns:
         List of dictionaries containing:
@@ -227,11 +237,11 @@ async def scrape(query: str) -> list[dict]:
             - website: Website URL
     """
     async with AsyncCamoufox(headless=HEADLESS) as browser:
-        lead_urls = await collect_lead_links(browser, query)
+        lead_urls = await collect_lead_links(browser, query, target=target)
         if not lead_urls:
             logger.info("No leads found for query")
             return []
 
-        results = await process_all_leads(browser, lead_urls)
+        results = await process_all_leads(browser, lead_urls, max_tabs=max_tabs)
         logger.info(f"Scraped {len(results)}/{len(lead_urls)} leads successfully")
         return results
