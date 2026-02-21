@@ -28,26 +28,24 @@ pip install -e .
 
 ```bash
 # Basic usage
-python -m src.main "Restaurants in San Francisco"
+python -m google_map_leadgen.main "Restaurants in San Francisco"
 
-# Specify number of leads
-python -m src.main "Plumbers in NYC" --leads 50
+# Specify number of leads and tabs
+python -m google_map_leadgen.main "Plumbers in NYC" --leads 50 --tabs 4
 
 # Output as JSON
-python -m src.main "Coffee shops" --json
-
-# Custom output file
-python -m src.main "Hotels in Miami" -o my_leads.csv
+python -m google_map_leadgen.main "Coffee shops" --json
 ```
 
 ### As a Library
 
 ```python
 import asyncio
-from src.scraper import scrape
+from google_map_leadgen import scrape
 
 async def main():
-    results = await scrape("Mobile Repair Shop in New York")
+    # You can specify target leads and concurrent tabs
+    results = await scrape("Mobile Repair Shop in New York", target=10, max_tabs=3)
     
     for lead in results:
         print(f"Name: {lead['name']}")
@@ -90,14 +88,53 @@ Results are returned as a list of dictionaries:
 
 ```
 google-map-leadgen/
-├── src/
+├── .github/             # GitHub Actions workflows (CI/CD)
+├── google_map_leadgen/  # Core package source
 │   ├── __init__.py      # Package initialization
 │   ├── config.py        # Configuration settings
 │   ├── main.py          # CLI entry point
 │   └── scraper.py       # Core scraping logic
-├── pyproject.toml       # Package configuration
-└── README.md            # This file
+├── tests/               # Unit and integration tests
+├── pyproject.toml       # Package configuration and dependencies
+└── README.md            # Project documentation
 ```
+
+## Development
+
+### Prerequisites
+
+- [uv](https://github.com/astral-sh/setup-uv) (Recommended) or Python 3.12+
+
+### Setup
+
+```bash
+# Clone the repository
+git clone https://github.com/yourusername/google-map-leadgen.git
+cd google-map-leadgen
+
+# Install dependencies
+uv sync --all-extras
+```
+
+### Running Tests
+
+```bash
+uv run pytest tests/ -v
+```
+
+### Linting
+
+```bash
+uv run ruff check .
+uv run ruff format .
+```
+
+## CI/CD
+
+This project uses GitHub Actions for:
+
+- **CI**: Automated testing and linting on every push and pull request.
+- **CD**: Automated publishing to PyPI on GitHub release.
 
 ## Requirements
 

@@ -8,7 +8,7 @@ This document identifies potential issues that can cause slow performance or une
 
 ### 1. High Number of Concurrent Tabs
 **Risk**: High  
-**Location**: `config.py:MAX_TABS`
+**Location**: `google_map_leadgen/config.py:MAX_TABS`
 
 Using too many tabs can:
 - Cause browser instability and crashes
@@ -20,7 +20,7 @@ Using too many tabs can:
 
 ### 2. Excessive Scroll Delay
 **Risk**: Medium  
-**Location**: `scraper.py:111`
+**Location**: `google_map_leadgen/scraper.py`
 
 The 0.8-second sleep after each scroll adds up:
 - For 100 leads: ~80 seconds just waiting
@@ -30,7 +30,7 @@ The 0.8-second sleep after each scroll adds up:
 
 ### 3. Stale Round Threshold
 **Risk**: Low  
-**Location**: `scraper.py:87`
+**Location**: `google_map_leadgen/scraper.py`
 
 The `max_stale=5` threshold may cause premature termination if Google loads results slowly, or unnecessary waiting if results load quickly.
 
@@ -38,13 +38,13 @@ The `max_stale=5` threshold may cause premature termination if Google loads resu
 
 ### 4. Resource Blocking Only in Phase 2
 **Risk**: Low  
-**Location**: `scraper.py:176`
+**Location**: `google_map_leadgen/scraper.py`
 
 Heavy resources are only blocked during data extraction (Phase 2), not during link collection. This is intentional but could be optimized.
 
 ### 5. No Request Caching
 **Risk**: Medium  
-**Location**: `scraper.py`
+**Location**: `google_map_leadgen/scraper.py`
 
 Every page navigation fetches all resources. No caching means repeated requests for common assets.
 
@@ -52,7 +52,7 @@ Every page navigation fetches all resources. No caching means repeated requests 
 
 ### 1. Selector Dependency on Google Maps UI
 **Risk**: High  
-**Location**: `scraper.py:42-56`
+**Location**: `google_map_leadgen/scraper.py`
 
 The scraper relies on specific CSS selectors:
 - `h1.DUwDvf` - Business name
@@ -66,7 +66,7 @@ Google frequently changes these selectors, which will break the scraper without 
 
 ### 2. No Rate Limiting
 **Risk**: High  
-**Location**: `scraper.py`
+**Location**: `google_map_leadgen/scraper.py`
 
 No artificial delays between requests. This can:
 - Trigger Google's bot detection
@@ -77,7 +77,7 @@ No artificial delays between requests. This can:
 
 ### 3. No Error Recovery for Partial Failures
 **Risk**: Medium  
-**Location**: `scraper.py:120-132`
+**Location**: `google_map_leadgen/scraper.py`
 
 If a single URL fails, it's silently skipped. No retry mechanism exists for transient failures (network issues, timeouts).
 
@@ -85,7 +85,7 @@ If a single URL fails, it's silently skipped. No retry mechanism exists for tran
 
 ### 4. No Proxy Support
 **Risk**: High  
-**Location**: `scraper.py`
+**Location**: `google_map_leadgen/scraper.py`
 
 Running without proxies means:
 - Single IP gets blocked easily
@@ -96,13 +96,13 @@ Running without proxies means:
 
 ### 5. Headless Mode Detection
 **Risk**: High  
-**Location**: `config.py:HEADLESS`
+**Location**: `google_map_leadgen/config.py:HEADLESS`
 
 While Camoufox is stealthy, headless mode can still be detected. Running in headed mode (`HEADLESS=false`) is less likely to trigger detection but uses more resources.
 
 ### 6. No Session Persistence
 **Risk**: Medium  
-**Location**: `scraper.py:198`
+**Location**: `google_map_leadgen/scraper.py`
 
 Each run creates a fresh browser session. This means:
 - No cookies/shared state between runs
@@ -111,13 +111,13 @@ Each run creates a fresh browser session. This means:
 
 ### 7. Memory Leaks from Unclosed Pages
 **Risk**: Medium  
-**Location**: `scraper.py:186-190`
+**Location**: `google_map_leadgen/scraper.py`
 
 Error handling closes pages in a try-except block, but if an exception occurs before the close attempt, pages may leak.
 
 ### 8. Queue Empty Race Condition
 **Risk**: Low  
-**Location**: `scraper.py:144-148`
+**Location**: `google_map_leadgen/scraper.py`
 
 Using `get_nowait()` with `QueueEmpty` exception is correct, but workers may not process all items if the queue isn't properly synchronized.
 
