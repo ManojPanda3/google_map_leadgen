@@ -22,6 +22,7 @@ Performance Optimizations:
 
 import asyncio
 import logging
+from contextlib import suppress
 
 from camoufox.async_api import AsyncCamoufox
 
@@ -30,6 +31,9 @@ from .config import HEADLESS, MAX_TABS, TARGET_LEADS
 logger = logging.getLogger(__name__)
 
 _BLOCKED_RESOURCE_TYPES = frozenset(("image", "media", "font", "ping", "websocket"))
+_WAIT_SLICE_SECONDS = 2
+_NAVIGATION_TIMEOUT_MS = 45_000
+_DETAIL_SELECTOR_TIMEOUT_MS = 30_000
 
 
 async def _block_heavy_resources(route):
@@ -65,8 +69,39 @@ _COLLECT_LINKS_JS = """
 """
 
 
+async def _wait_in_slices(task: asyncio.Task, total_timeout_ms: int) -> bool:
+    """
+    Wait for a task in short slices to avoid one large static timeout.
+
+    Returns:
+        True if task finished before timeout, False if timed out.
+    """
+    loop = asyncio.get_running_loop()
+    deadline = loop.time() + (total_timeout_ms / 1000)
+
+    while True:
+        remaining = deadline - loop.time()
+        if remaining <= 0:
+            task.cancel()
+            with suppress(asyncio.CancelledError, Exception):
+                await task
+            return False
+
+        try:
+            await asyncio.wait_for(
+                asyncio.shield(task),
+                timeout=min(_WAIT_SLICE_SECONDS, remaining),
+            )
+            return True
+        except TimeoutError:
+            continue
+
+
 async def collect_lead_links(
-    browser, query: str, target: int = TARGET_LEADS
+    browser,
+    query: str,
+    target: int = TARGET_LEADS,
+    url_queue: asyncio.Queue[str | None] | None = None,
 ) -> list[str]:
     """
     Search Google Maps for a query and collect place URLs.
@@ -75,6 +110,7 @@ async def collect_lead_links(
         browser: Camoufox browser instance
         query: Search query (e.g., "Mobile Repair Shop in New York")
         target: Maximum number of lead URLs to collect
+        url_queue: Optional queue to stream newly found URLs to consumers
 
     Returns:
         List of unique Google Maps place URLs
@@ -94,19 +130,33 @@ async def collect_lead_links(
         return []
 
     update_btn = page.get_by_role("checkbox", name="Update results when map moves")
-    is_checked = (await update_btn.get_attribute("aria-checked")) == "true"
-    await update_btn.click();
+    if asyncio.iscoroutine(update_btn):
+        update_btn = await update_btn
+    with suppress(Exception):
+        await update_btn.click()
 
     lead_links: set[str] = set()
     stale_rounds = 0
     max_stale = 5
 
     while len(lead_links) < target and stale_rounds < max_stale:
-        prev_count = len(lead_links)
         hrefs = await page.evaluate(_COLLECT_LINKS_JS)
-        lead_links.update(hrefs)
+        new_links = 0
 
-        if len(lead_links) == prev_count:
+        for href in hrefs:
+            if href in lead_links:
+                continue
+
+            lead_links.add(href)
+            new_links += 1
+
+            if url_queue is not None:
+                await url_queue.put(href)
+
+            if len(lead_links) >= target:
+                break
+
+        if new_links == 0:
             stale_rounds += 1
         else:
             stale_rounds = 0
@@ -137,8 +187,24 @@ async def extract_lead_data(page, url: str) -> dict | None:
         Dictionary with name, address, phone, website or None if failed
     """
     try:
-        await page.goto(url, wait_until="domcontentloaded", timeout=30_000)
-        await page.wait_for_selector("h1.DUwDvf", timeout=15_000)
+        navigation_task = asyncio.create_task(
+            page.goto(url, wait_until="domcontentloaded", timeout=0)
+        )
+        if not await _wait_in_slices(
+            navigation_task, total_timeout_ms=_NAVIGATION_TIMEOUT_MS
+        ):
+            logger.debug(f"Timed out while loading {url}")
+            return None
+
+        selector_task = asyncio.create_task(
+            page.wait_for_selector("h1.DUwDvf", timeout=0)
+        )
+        if not await _wait_in_slices(
+            selector_task, total_timeout_ms=_DETAIL_SELECTOR_TIMEOUT_MS
+        ):
+            logger.debug(f"Timed out waiting for data on {url}")
+            return None
+
         data = await page.evaluate(_EXTRACT_DATA_JS)
         return data if data else None
     except Exception as exc:
@@ -148,10 +214,8 @@ async def extract_lead_data(page, url: str) -> dict | None:
 
 async def _page_worker(
     page,
-    url_queue: asyncio.Queue,
+    url_queue: asyncio.Queue[str | None],
     results: list,
-    total: int,
-    counter: dict,
 ):
     """
     Worker that owns a persistent page and processes URLs from queue.
@@ -160,21 +224,18 @@ async def _page_worker(
         page: Camoufox page instance
         url_queue: Queue of URLs to process
         results: List to append successful results
-        total: Total number of URLs to process
-        counter: Shared counter for progress tracking
     """
     while True:
+        url = await url_queue.get()
         try:
-            url = url_queue.get_nowait()
-        except asyncio.QueueEmpty:
-            break
+            if url is None:
+                return
 
-        counter["n"] += 1
-        data = await extract_lead_data(page, url)
-        if data:
-            results.append(data)
-
-        url_queue.task_done()
+            data = await extract_lead_data(page, url)
+            if data:
+                results.append(data)
+        finally:
+            url_queue.task_done()
 
 
 async def process_all_leads(
@@ -191,14 +252,18 @@ async def process_all_leads(
     Returns:
         List of dictionaries containing business data
     """
-    num_tabs = min(max_tabs, len(urls))
+    if not urls:
+        return []
 
-    url_queue: asyncio.Queue[str] = asyncio.Queue()
+    num_tabs = max(1, min(max_tabs, len(urls)))
+
+    url_queue: asyncio.Queue[str | None] = asyncio.Queue()
     for url in urls:
         url_queue.put_nowait(url)
+    for _ in range(num_tabs):
+        url_queue.put_nowait(None)
 
     results: list[dict] = []
-    counter = {"n": 0}
 
     pages = []
     for _ in range(num_tabs):
@@ -207,10 +272,11 @@ async def process_all_leads(
         pages.append(p)
 
     tasks = [
-        asyncio.create_task(_page_worker(page, url_queue, results, len(urls), counter))
+        asyncio.create_task(_page_worker(page, url_queue, results))
         for page in pages
     ]
 
+    await url_queue.join()
     await asyncio.gather(*tasks)
 
     for p in pages:
@@ -240,12 +306,43 @@ async def scrape(
             - phone: Phone number
             - website: Website URL
     """
+    if target <= 0:
+        return []
+
     async with AsyncCamoufox(headless=HEADLESS) as browser:
-        lead_urls = await collect_lead_links(browser, query, target=target)
+        num_tabs = max(1, min(max_tabs, target))
+        url_queue: asyncio.Queue[str | None] = asyncio.Queue()
+        results: list[dict] = []
+
+        pages = []
+        for _ in range(num_tabs):
+            page = await browser.new_page(viewport={"width": 800, "height": 600})
+            await page.route("**/*", _block_heavy_resources)
+            pages.append(page)
+
+        tasks = [
+            asyncio.create_task(_page_worker(page, url_queue, results))
+            for page in pages
+        ]
+
+        try:
+            lead_urls = await collect_lead_links(
+                browser, query, target=target, url_queue=url_queue
+            )
+        finally:
+            for _ in range(num_tabs):
+                await url_queue.put(None)
+
+        await url_queue.join()
+        await asyncio.gather(*tasks)
+
+        for page in pages:
+            with suppress(Exception):
+                await page.close()
+
         if not lead_urls:
             logger.info("No leads found for query")
             return []
 
-        results = await process_all_leads(browser, lead_urls, max_tabs=max_tabs)
         logger.info(f"Scraped {len(results)}/{len(lead_urls)} leads successfully")
         return results

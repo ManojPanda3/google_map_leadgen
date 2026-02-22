@@ -1,6 +1,7 @@
 """Tests for scraper module."""
 
-from unittest.mock import AsyncMock, patch
+import asyncio
+from unittest.mock import AsyncMock, Mock, patch
 
 import pytest
 
@@ -8,6 +9,7 @@ from google_map_leadgen.scraper import (
     _COLLECT_LINKS_JS,
     _EXTRACT_DATA_JS,
     _block_heavy_resources,
+    _wait_in_slices,
     collect_lead_links,
     extract_lead_data,
     process_all_leads,
@@ -64,6 +66,18 @@ class TestJavaScriptExtraction:
         assert "document.querySelectorAll" in _COLLECT_LINKS_JS
 
 
+class TestWaitInSlices:
+    @pytest.mark.asyncio
+    async def test_returns_true_when_task_finishes(self):
+        task = asyncio.create_task(asyncio.sleep(0))
+        assert await _wait_in_slices(task, total_timeout_ms=100)
+
+    @pytest.mark.asyncio
+    async def test_returns_false_on_timeout(self):
+        task = asyncio.create_task(asyncio.sleep(1))
+        assert not await _wait_in_slices(task, total_timeout_ms=1)
+
+
 class TestCollectLeadLinks:
     @pytest.mark.asyncio
     async def test_returns_empty_list_on_feed_failure(self):
@@ -71,6 +85,7 @@ class TestCollectLeadLinks:
         mock_page = AsyncMock()
         mock_browser.new_page.return_value = mock_page
         mock_page.wait_for_selector.side_effect = Exception("Feed not found")
+        mock_page.get_by_role = Mock(return_value=AsyncMock())
 
         result = await collect_lead_links(mock_browser, "test query", target=5)
 
@@ -82,6 +97,7 @@ class TestCollectLeadLinks:
         mock_browser = AsyncMock()
         mock_page = AsyncMock()
         mock_browser.new_page.return_value = mock_page
+        mock_page.get_by_role = Mock(return_value=AsyncMock())
 
         mock_page.evaluate.return_value = [
             "https://maps.google.com/place/1",
@@ -93,6 +109,27 @@ class TestCollectLeadLinks:
 
         assert len(result) == 2
         mock_page.close.assert_called_once()
+
+    @pytest.mark.asyncio
+    async def test_streams_links_to_queue(self):
+        mock_browser = AsyncMock()
+        mock_page = AsyncMock()
+        mock_browser.new_page.return_value = mock_page
+        mock_page.get_by_role = Mock(return_value=AsyncMock())
+        mock_page.evaluate.return_value = [
+            "https://maps.google.com/place/1",
+            "https://maps.google.com/place/2",
+            "https://maps.google.com/place/3",
+        ]
+
+        url_queue: asyncio.Queue[str | None] = asyncio.Queue()
+        result = await collect_lead_links(
+            mock_browser, "test query", target=2, url_queue=url_queue
+        )
+
+        queued = [await url_queue.get(), await url_queue.get()]
+        assert len(result) == 2
+        assert set(queued) == set(result)
 
 
 class TestExtractLeadData:
@@ -129,6 +166,24 @@ class TestExtractLeadData:
         result = await extract_lead_data(mock_page, "https://maps.google.com/place/1")
 
         assert result is None
+
+    @pytest.mark.asyncio
+    async def test_returns_none_on_navigation_timeout(self):
+        mock_page = AsyncMock()
+        with patch("google_map_leadgen.scraper._wait_in_slices", return_value=False):
+            result = await extract_lead_data(mock_page, "https://maps.google.com/place/1")
+        assert result is None
+
+    @pytest.mark.asyncio
+    async def test_returns_none_on_selector_timeout(self):
+        mock_page = AsyncMock()
+        with patch(
+            "google_map_leadgen.scraper._wait_in_slices",
+            side_effect=[True, False],
+        ):
+            result = await extract_lead_data(mock_page, "https://maps.google.com/place/1")
+        assert result is None
+        mock_page.evaluate.assert_not_called()
 
 
 class TestProcessAllLeads:
@@ -189,14 +244,28 @@ class TestScrape:
             mock_camoufox.return_value.__aenter__.return_value = mock_browser
 
             mock_urls = ["url1", "url2"]
-            mock_results = [{"name": "Business 1"}, {"name": "Business 2"}]
+            mock_pages = [AsyncMock(), AsyncMock()]
+            mock_browser.new_page.side_effect = mock_pages
+
+            async def fake_collect(_, __, target=25, url_queue=None):
+                for url in mock_urls:
+                    await url_queue.put(url)
+                return mock_urls[:target]
+
+            async def fake_extract(_, url):
+                return {"name": f"Business {url[-1]}"}
 
             with patch(
-                "google_map_leadgen.scraper.collect_lead_links", return_value=mock_urls
+                "google_map_leadgen.scraper.collect_lead_links",
+                side_effect=fake_collect,
             ):
                 with patch(
-                    "google_map_leadgen.scraper.process_all_leads",
-                    return_value=mock_results,
+                    "google_map_leadgen.scraper.extract_lead_data",
+                    side_effect=fake_extract,
                 ):
-                    result = await scrape("test query")
-                    assert result == mock_results
+                    result = await scrape("test query", target=2, max_tabs=2)
+                    assert len(result) == 2
+                    assert {item["name"] for item in result} == {
+                        "Business 1",
+                        "Business 2",
+                    }
