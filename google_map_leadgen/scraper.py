@@ -132,8 +132,11 @@ async def collect_lead_links(
     update_btn = page.get_by_role("checkbox", name="Update results when map moves")
     if asyncio.iscoroutine(update_btn):
         update_btn = await update_btn
-    with suppress(Exception):
-        await update_btn.click()
+
+    is_clicked = await update_btn.click()
+    if is_clicked:
+        with suppress(Exception):
+            await update_btn.click()
 
     lead_links: set[str] = set()
     stale_rounds = 0
@@ -272,8 +275,7 @@ async def process_all_leads(
         pages.append(p)
 
     tasks = [
-        asyncio.create_task(_page_worker(page, url_queue, results))
-        for page in pages
+        asyncio.create_task(_page_worker(page, url_queue, results)) for page in pages
     ]
 
     await url_queue.join()
@@ -314,6 +316,10 @@ async def scrape(
         url_queue: asyncio.Queue[str | None] = asyncio.Queue()
         results: list[dict] = []
 
+        lead_urls = await collect_lead_links(
+            browser, query, target=target, url_queue=url_queue
+        )
+
         pages = []
         for _ in range(num_tabs):
             page = await browser.new_page(viewport={"width": 800, "height": 600})
@@ -325,13 +331,8 @@ async def scrape(
             for page in pages
         ]
 
-        try:
-            lead_urls = await collect_lead_links(
-                browser, query, target=target, url_queue=url_queue
-            )
-        finally:
-            for _ in range(num_tabs):
-                await url_queue.put(None)
+        for _ in range(num_tabs):
+            await url_queue.put(None)
 
         await url_queue.join()
         await asyncio.gather(*tasks)
