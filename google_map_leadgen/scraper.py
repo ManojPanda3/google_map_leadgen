@@ -80,10 +80,10 @@ async def collect_lead_links(
         List of unique Google Maps place URLs
     """
     page = await browser.new_page(viewport={"width": 800, "height": 600})
-
     search_url = (
         f"https://www.google.com/maps/search/{query.replace(' ', '+')}?entry=ttu"
     )
+
     await page.goto(search_url, wait_until="domcontentloaded", timeout=60_000)
 
     try:
@@ -92,6 +92,10 @@ async def collect_lead_links(
         logger.warning("Failed to load results feed")
         await page.close()
         return []
+
+    update_btn = page.get_by_role("checkbox", name="Update results when map moves")
+    is_checked = (await update_btn.get_attribute("aria-checked")) == "true"
+    await update_btn.click();
 
     lead_links: set[str] = set()
     stale_rounds = 0
